@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Capture fapolicyd debug output into a ring buffer and log on match."""
+
+import argparse
+import collections
+import re
+import subprocess
+import sys
+from typing import Deque, Iterable, Optional, TextIO
+
+ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+READY_MARKER = "Starting to listen for events"
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from a string."""
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Capture fapolicyd debug output, buffer the last N lines, and "
+            "write them to a file when a match occurs."
+        )
+    )
+    parser.add_argument(
+        "-n",
+        "--buffer-size",
+        dest="buffer_size",
+        type=int,
+        required=True,
+        help="Ring buffer size to retain the last N lines.",
+    )
+    parser.add_argument(
+        "-m",
+        "--match",
+        dest="match",
+        type=str,
+        required=True,
+        help="String to match in the fapolicyd output (ANSI stripped).",
+    )
+    parser.add_argument(
+        "output_file",
+        type=str,
+        help="File to write the buffered output to when a match occurs.",
+    )
+    parser.add_argument(
+        "--keepalive",
+        action="store_true",
+        help=(
+            "After capturing the match, keep draining piped input so the upstream "
+            "process stays running."
+        ),
+    )
+    return parser.parse_args()
+
+
+
+def validate_buffer_size(size: int) -> None:
+    """Ensure the ring buffer size is a positive integer."""
+    if size <= 0:
+        raise ValueError("Buffer size must be a positive integer")
+
+
+
+def write_buffer(buffer: Iterable[str], path: str) -> None:
+    """Write the buffered lines to the specified file."""
+    with open(path, "w", encoding="utf-8") as output:
+        for line in buffer:
+            output.write(line)
+
+
+
+def terminate_process(proc: subprocess.Popen) -> None:
+    """Terminate the subprocess cleanly, falling back to SIGKILL if needed."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    except OSError:
+        pass
+
+
+
+def spawn_passthrough() -> None:
+    """Launch a passthrough cat to keep the pipe open for the upstream."""
+    try:
+        subprocess.Popen(["cat"])
+    except OSError as error:
+        sys.stderr.write(f"[facapture] failed to keep stream open: {error}\n")
+
+
+def capture_output(
+    buffer_size: int,
+    match: str,
+    stream: Optional[Iterable[str]] = None,
+    keepalive: bool = False,
+) -> tuple[Deque[str], bool]:
+    """Capture output from fapolicyd or stdin and look for a match.
+
+    Args:
+        buffer_size: Maximum number of lines to keep in the ring buffer.
+        match: String to search for in stripped output.
+        stream: Optional iterable of text lines. When omitted, facapture will
+            execute ``fapolicyd --debug`` and capture its stdout.
+
+    Returns:
+        A tuple of (buffer, matched) where buffer is the deque of captured
+        lines (from oldest to newest) and matched indicates whether the match
+        was found.
+    """
+    ring: Deque[str] = collections.deque(maxlen=buffer_size)
+    matched = False
+    lines_after_match = 0
+    ready_for_match = False
+    handoff = False
+
+    proc: Optional[subprocess.Popen[str]] = None
+    source: Optional[Iterable[str]] = stream
+
+    if source is None:
+        proc = subprocess.Popen(
+            ["fapolicyd", "--debug"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        source = proc.stdout
+
+    try:
+        if source is None:
+            return ring, matched
+
+        for raw_line in source:
+            sys.stdout.write(raw_line)
+            sys.stdout.flush()
+            clean_line = strip_ansi(raw_line)
+            if not (matched and lines_after_match == 0 and keepalive):
+                ring.append(clean_line)
+
+            if not ready_for_match:
+                if READY_MARKER in clean_line:
+                    ready_for_match = True
+                continue
+
+            if not matched and match in clean_line:
+                matched = True
+                lines_after_match = 2
+                notify_line = clean_line.rstrip("\n")
+                if notify_line:
+                    sys.stdout.write(f"[facapture] match triggered: {notify_line}\n")
+                else:
+                    sys.stdout.write("[facapture] match triggered.\n")
+                sys.stdout.flush()
+                continue
+
+            if matched and lines_after_match > 0:
+                lines_after_match -= 1
+                if lines_after_match == 0:
+                    if keepalive:
+                        handoff = True
+                    break
+        else:
+            return ring, matched
+    finally:
+        if proc is not None:
+            terminate_process(proc)
+
+    if handoff:
+        spawn_passthrough()
+
+    return ring, matched
+
+
+
+def main() -> int:
+    """Entrypoint for facapture."""
+    args = parse_args()
+    try:
+        validate_buffer_size(args.buffer_size)
+    except ValueError as error:
+        sys.stderr.write(f"error: {error}\n")
+        return 1
+
+    input_stream: Optional[TextIO] = None
+    if not sys.stdin.isatty():
+        input_stream = sys.stdin
+
+    keepalive = bool(input_stream) and args.keepalive
+    if args.keepalive and not keepalive:
+        sys.stderr.write(
+            "--keepalive ignored because no piped input was detected.\n"
+        )
+
+    buffer, matched = capture_output(
+        args.buffer_size,
+        args.match,
+        input_stream,
+        keepalive,
+    )
+    if not matched:
+        sys.stderr.write("Match string not found before process exit.\n")
+    try:
+        write_buffer(buffer, args.output_file)
+    except OSError as error:
+        sys.stderr.write(f"Failed to write buffer: {error}\n")
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
