@@ -59,3 +59,4 @@ fapolicyd --debug |& ./facapture -n 100 -m 'rule=5' capture.log --keepalive
 - If you never see `Starting to listen for events`, ensure `fapolicyd --debug` is starting cleanly and not failing during initialization.
 - If you request `--keepalive` but are running `facapture` directly (no piped input), the flag is ignored because there is no upstream process to keep alive.
 - When using a small buffer size, it is possible that older context lines are overwritten before the match occurs. Increase `-n` if you need a longer history.
+- Update `syslog_format` in `fapolicyd.conf` to include `ppid` before pid so that you can see the relationship between processes.
