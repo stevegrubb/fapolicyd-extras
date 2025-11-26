@@ -6,13 +6,19 @@ The code in this directory can be used to performance test the decision thread. 
 dnf install perf
 
 Install from updates to get the latest:
-dnf install -y --enable-repo=updates-debuginfo rpm-libs-debuginfo rpm-debuginfo lmdb-debuginfo glibc-debuginfo glibc-common-debuginfo openssl-libs-debuginfo libattr-debuginfo file-debuginfo --skip-unavailable
+dnf install -y --enable-repo=updates-debuginfo rpm-libs-debuginfo \
+rpm-debuginfo  lmdb-debuginfo glibc-debuginfo glibc-common-debuginfo \
+openssl-libs-debuginfo libattr-debuginfo file-debuginfo --skip-unavailable
 
 Install anything missing from fedora
-dnf install -y --enable-repo=fedora-debuginfo rpm-libs-debuginfo rpm-debuginfo lmdb-debuginfo glibc-debuginfo glibc-common-debuginfo openssl-libs-debuginfo libattr-debuginfo file-debuginfo --skip-unavailable
+dnf install -y --enable-repo=fedora-debuginfo rpm-libs-debuginfo \
+rpm-debuginfo lmdb-debuginfo glibc-debuginfo glibc-common-debuginfo \
+openssl-libs-debuginfo libattr-debuginfo file-debuginfo --skip-unavailable
 
 ```
-Adjust the path so that it can find the freshly built fapolicyd. It doesn't matter if it was an srpm or built from a freshly cloned github repo. The first fix is to point to the fapolicyd header files. There are 2 sets, the config.h file which is in the top most directory and then the library headers.
+
+For security purposes, fapolicyd's intenal library is built for static linking. So, to run this test suite, it needs to find an unlinked copy of that library. It doesn't matter if it was an srpm or built from a freshly cloned github repo.
+Adjust the path in the Makefile so that it can find the freshly built fapolicyd. The first fix is to point the includes (-I) to the fapolicyd header files. There are 2 sets, the config.h file which is in the top most directory and then the library headers. The second fix is to point the linker to the fapolicyd library (-L). For this example, we will assume the user is in a "build" account. Adjust accordingly.
 
 ```
 vi Makefile
@@ -37,7 +43,7 @@ The test driver has a string inside it called cmd_template. It looks like this:
 /usr/bin/perf record --call-graph dwarf --no-inherit -p %d &
 ```
 
-You can modify that any way you like. What this does is launch the perf command in the record mode and collecting a dwarf style call graph. It does not want any child processes and points to the test driver's pid. it runs in the background so that the test can proceed.
+You can modify that any way you like. What this does is launch the perf command in the record mode and collecting a dwarf style call graph. It does not want any child processes and points to the test driver's pid. It runs in the background so that the test can proceed.
 
 After collection, you can process the captured data any way you want. In the example above, it runs the interactive perf report. You can also take the data and turn it into a flame-graph. You can get the code needed below from here: https://github.com/brendangregg/FlameGraph. Put the scripts in a directory in your path. The run this:
 
