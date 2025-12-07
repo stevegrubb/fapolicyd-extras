@@ -17,11 +17,7 @@ This allows studying what file types are used in different workloads.
 
 The program relies on `libfapolicyd` `libmagic`, and `libudev`. You will need to clone and build the fapolicyd application. libfapolicyd is located in fapolicyd/src. After configuring and building the repository, you can build the tool against the produced library:
 
-```
-LIBFAPOLICYD="~/fapolicyd/src"
-gcc -std=gnu11 -I$LIBFAPOLICYD -I$LIBFAPOLICYD/library \
-    fanotify_mime_type.c $LIBFAPOLICYD/.libs/libfapolicyd.a -lmagic -o fanotify_mime_type
-```
+Edit the Makefile to point the LIBFAPOLICYD variable to the full path to your freshly built fapolicyd project is. The just run `make`.
 
 Run the binary as root so it can subscribe to fanotify permission events and write its findings after it receives `SIGINT` (Ctrl+C) or `SIGTERM`. Example output from a desktop run:
 
