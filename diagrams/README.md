@@ -1,6 +1,6 @@
 # Fapolicyd Diagrams
 
-This directory contains diagrams to help understand how fapolicyd works internally.
+This directory contains diagrams to help understand how fapolicyd works internally. The next 4 diagrams are specific to fapolicyd-1.4.4.
 
 ## Class Diagram
 
