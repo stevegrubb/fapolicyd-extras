@@ -11,6 +11,7 @@
 #include <syslog.h>
 #include <stdbool.h>
 #include <stdarg.h>
+#include <mntent.h>
 
 static bool use_syslog = false;
 
@@ -105,7 +106,7 @@ static int get_path_from_fd(int fd, char *buf, size_t bufsize) {
 }
 
 /* Convert mask to permission string */
-static const char* mask_to_perm(uint64_t mask) {
+static const char *mask_to_perm(uint64_t mask) {
 	if (mask & FAN_OPEN_EXEC_PERM || mask & FAN_OPEN_EXEC) {
 		return "execute";
 	} else if (mask & FAN_OPEN_PERM || mask & FAN_OPEN) {
@@ -114,6 +115,38 @@ static const char* mask_to_perm(uint64_t mask) {
 		return "access";
 	}
 	return "unknown";
+}
+
+static void mark_all_mounts(int fan_fd, uint64_t mask)
+{
+	FILE *fp;
+	struct mntent *mnt;
+
+	fp = setmntent("/proc/mounts", "r");
+	if (!fp) {
+		perror("setmntent");
+		exit(EXIT_FAILURE);
+	}
+
+	while ((mnt = getmntent(fp)) != NULL) {
+		if (strncmp(mnt->mnt_dir, "/dev", 4) == 0)
+			continue;
+		if (strncmp(mnt->mnt_dir, "/sys", 4) == 0)
+			continue;
+		if (strncmp(mnt->mnt_dir, "/proc", 5) == 0)
+			continue;
+		if (fanotify_mark(fan_fd, FAN_MARK_ADD | FAN_MARK_MOUNT,
+				  mask, AT_FDCWD, mnt->mnt_dir) == -1) {
+			fprintf(stderr, "fanotify_mark %s (%s): %s\n",
+				mnt->mnt_dir, mnt->mnt_type, strerror(errno));
+			continue;
+		}
+
+		fprintf(stderr, "marked %s (%s)\n", mnt->mnt_dir, mnt->mnt_type)
+			;
+	}
+
+	endmntent(fp);
 }
 
 int main(int argc, char *argv[]) {
@@ -143,8 +176,8 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* Initialize fanotify */
-	fan_fd = fanotify_init(FAN_CLASS_CONTENT | FAN_UNLIMITED_QUEUE | FAN_UNLIMITED_MARKS,
-			       O_RDONLY | O_LARGEFILE);
+	fan_fd = fanotify_init(FAN_CLASS_CONTENT | FAN_UNLIMITED_QUEUE |
+			       FAN_UNLIMITED_MARKS, O_RDONLY | O_LARGEFILE);
 
 	if (fan_fd == -1) {
 		perror("fanotify_init");
@@ -154,12 +187,7 @@ int main(int argc, char *argv[]) {
 	/* Mark filesystem for monitoring */
 	uint64_t mask = FAN_OPEN_EXEC_PERM | FAN_OPEN_PERM;
 
-	if (fanotify_mark(fan_fd, FAN_MARK_ADD | FAN_MARK_MOUNT,
-			  mask, AT_FDCWD, mount_point) == -1) {
-		perror("fanotify_mark");
-		close(fan_fd);
-		exit(EXIT_FAILURE);
-	}
+	mark_all_mounts(fan_fd, mask);
 
 	if (use_syslog) {
 		syslog(LOG_INFO, "fanotify_monitor started on %s", mount_point);
